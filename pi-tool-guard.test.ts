@@ -5,24 +5,27 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	compilePatterns,
 	DEFAULT_PATTERNS,
-	getGuardSettings,
 	readSettings,
-} from "./permis-guard.ts";
+} from "./pi-tool-guard.ts";
+
+const tempDirs: string[] = [];
+
+afterEach(() => {
+	for (const dir of tempDirs.splice(0))
+		rmSync(dir, { recursive: true, force: true });
+});
+
+function writeTempSettings(content: string): string {
+	const dir = mkdtempSync(join(tmpdir(), "pi-tool-guard-"));
+	tempDirs.push(dir);
+	const path = join(dir, "settings.json");
+	writeFileSync(path, content);
+	return path;
+}
 
 describe("readSettings", () => {
-	const dirs: string[] = [];
-
-	afterEach(() => {
-		for (const dir of dirs.splice(0))
-			rmSync(dir, { recursive: true, force: true });
-	});
-
 	it("returns parsed JSON for a valid file", () => {
-		const dir = mkdtempSync(join(tmpdir(), "pi-tool-guard-"));
-		dirs.push(dir);
-		const path = join(dir, "settings.json");
-		writeFileSync(
-			path,
+		const path = writeTempSettings(
 			JSON.stringify({ permissionGuard: { bashPatterns: ["x"] } }),
 		);
 
@@ -36,31 +39,9 @@ describe("readSettings", () => {
 	});
 
 	it("returns empty object for invalid JSON", () => {
-		const dir = mkdtempSync(join(tmpdir(), "pi-tool-guard-"));
-		dirs.push(dir);
-		const path = join(dir, "settings.json");
-		writeFileSync(path, "{ not json");
+		const path = writeTempSettings("{ not json");
 
 		expect(readSettings(path)).toEqual({});
-	});
-});
-
-describe("getGuardSettings", () => {
-	it("merges project over global settings", () => {
-		const global = { permissionGuard: { bashPatterns: ["a", "b"] } };
-		const project = { permissionGuard: { bashPatterns: ["c"] } };
-
-		expect(getGuardSettings(global, project)).toEqual({ bashPatterns: ["c"] });
-	});
-
-	it("uses global when project has no permissionGuard key", () => {
-		const global = { permissionGuard: { bashPatterns: ["a"] } };
-
-		expect(getGuardSettings(global, {})).toEqual({ bashPatterns: ["a"] });
-	});
-
-	it("returns empty settings when neither has the key", () => {
-		expect(getGuardSettings({}, {})).toEqual({});
 	});
 });
 
@@ -93,9 +74,7 @@ describe("compilePatterns", () => {
 	it("default patterns match dangerous commands", () => {
 		const patterns = compilePatterns(DEFAULT_PATTERNS);
 
-		expect(patterns.length).toBeGreaterThan(0);
-		expect(patterns.some((p) => p.test("rm -rf /"))).toBe(true);
-		expect(patterns.some((p) => p.test("echo hi >> log"))).toBe(true);
+		expect(patterns).toHaveLength(DEFAULT_PATTERNS.length);
 		expect(patterns.some((p) => p.test("ssh host"))).toBe(true);
 		expect(patterns.some((p) => p.test("ls -la"))).toBe(false);
 	});

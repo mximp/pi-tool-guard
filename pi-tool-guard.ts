@@ -35,9 +35,9 @@ export const DEFAULT_PATTERNS: string[] = [
 	"\\bssh\\b",
 ];
 
-interface PermissionGuardSettings {
-	bashPatterns?: string[];
-}
+const DEFAULT_COMPILED: RegExp[] = DEFAULT_PATTERNS.map(
+	(source) => new RegExp(source),
+);
 
 export function readSettings(path: string): Record<string, unknown> {
 	try {
@@ -45,17 +45,6 @@ export function readSettings(path: string): Record<string, unknown> {
 	} catch {
 		return {};
 	}
-}
-
-export function getGuardSettings(
-	globalSettings: Record<string, unknown>,
-	projectSettings: Record<string, unknown>,
-): PermissionGuardSettings {
-	const global = (globalSettings.permissionGuard ??
-		{}) as PermissionGuardSettings;
-	const project = (projectSettings.permissionGuard ??
-		{}) as PermissionGuardSettings;
-	return { ...global, ...project };
 }
 
 export function compilePatterns(sources: string[]): RegExp[] {
@@ -77,14 +66,11 @@ function loadPatterns(cwd: string, isProjectTrusted: () => boolean): RegExp[] {
 		? readSettings(join(cwd, CONFIG_DIR_NAME, "settings.json"))
 		: {};
 
-	const guard = getGuardSettings(globalSettings, projectSettings);
-	const sources =
-		guard.bashPatterns && guard.bashPatterns.length > 0
-			? guard.bashPatterns
-			: DEFAULT_PATTERNS;
-
-	const patterns = compilePatterns(sources);
-	return patterns.length > 0 ? patterns : compilePatterns(DEFAULT_PATTERNS);
+	// Project settings override global settings (replace, not merge).
+	const guard = (projectSettings.permissionGuard ??
+		globalSettings.permissionGuard) as { bashPatterns?: string[] } | undefined;
+	const compiled = compilePatterns(guard?.bashPatterns ?? DEFAULT_PATTERNS);
+	return compiled.length > 0 ? compiled : DEFAULT_COMPILED;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -93,10 +79,7 @@ export default function (pi: ExtensionAPI) {
 	const getPatterns = (
 		cwd: string,
 		isProjectTrusted: () => boolean,
-	): RegExp[] => {
-		if (!patterns) patterns = loadPatterns(cwd, isProjectTrusted);
-		return patterns;
-	};
+	): RegExp[] => (patterns ??= loadPatterns(cwd, isProjectTrusted));
 
 	pi.on("session_start", () => {
 		// Reload per session so config edits and project switches take effect.
@@ -104,13 +87,18 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
-		if (event.toolName !== "bash") return undefined;
-		const command = (event.input.command as string) ?? "";
+		let bash_match = false;
+		let command = "";
+		if (event.toolName === "bash") {
+			command = (event.input.command as string) ?? "";
+			bash_match = getPatterns(ctx.cwd, () => ctx.isProjectTrusted()).some(
+				(p) => p.test(command),
+			);
+		}
 
-		const dangerous = getPatterns(ctx.cwd, () => ctx.isProjectTrusted()).some(
-			(p) => p.test(command),
-		);
-		if (!dangerous) return undefined;
+		if (!["write", "edit"].includes(event.toolName) && !bash_match)
+			return undefined;
+
 		const summary = `$ ${command}`;
 
 		if (!ctx.hasUI) {
